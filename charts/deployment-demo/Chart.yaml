@@ -1,0 +1,11 @@
+apiVersion: v2
+name: deployment-demo
+description: >
+  Demo workload showing the everyday Deployment building blocks in one
+  chart: CPU/memory requests+limits, a PVC for state that survives pod
+  restarts, an Ingress for external access, and env vars flowing from
+  values.yaml into the container. No custom image — nginx:alpine plus a
+  mounted render script.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

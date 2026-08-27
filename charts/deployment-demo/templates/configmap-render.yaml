@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "deployment-demo.fullname" . }}-render
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deployment-demo.labels" . | nindent 4 }}
+data:
+  render.sh: |
+    #!/bin/sh
+    # Renders index.html once at container start, then hands off to nginx.
+    # The visit counter lives on the PVC mounted at /data: kill the pod and
+    # the replacement's render still sees the previous count, because the
+    # volume (not the container filesystem) is what held the state.
+    set -eu
+
+    esc() {
+      printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+    }
+
+    COUNT_FILE=/data/visits.count
+    [ -f "$COUNT_FILE" ] || echo 0 > "$COUNT_FILE"
+    COUNT=$(( $(cat "$COUNT_FILE") + 1 ))
+    echo "$COUNT" > "$COUNT_FILE"
+
+    OUT=/usr/share/nginx/html/index.html
+    {
+      echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>deployment-demo</title>'
+      echo '<style>body{font-family:system-ui,sans-serif;margin:2rem;color:#1a1a1a}'
+      echo 'table{border-collapse:collapse;margin-top:.5rem}td,th{border:1px solid #ccc;padding:.4rem .8rem;text-align:left}'
+      echo 'th{background:#f0f4ff}code{background:#f5f5f5;padding:.1rem .3rem;border-radius:3px}'
+      echo 'h2{margin-top:2rem}</style>'
+      echo '</head><body>'
+      echo '<h1>deployment-demo</h1>'
+      echo "<p>Pod: <code>$(esc "$(hostname)")</code></p>"
+      echo "<p>Pod restarts since the PVC was created: <b>$COUNT</b> — restart this pod and refresh; the counter keeps climbing instead of resetting to 1.</p>"
+
+      echo '<h2>Resources (Downward API — what the container actually got)</h2>'
+      echo '<table><tr><th>Field</th><th>Value</th></tr>'
+      echo "<tr><td>requests.cpu</td><td>${CPU_REQUEST_M:-?}m</td></tr>"
+      echo "<tr><td>requests.memory</td><td>${MEM_REQUEST_MI:-?}Mi</td></tr>"
+      echo "<tr><td>limits.cpu</td><td>${CPU_LIMIT_M:-?}m</td></tr>"
+      echo "<tr><td>limits.memory</td><td>${MEM_LIMIT_MI:-?}Mi</td></tr>"
+      echo '</table>'
+
+      echo '<h2>Env vars from values.yaml (DEMO_*)</h2>'
+      if env | grep -q '^DEMO_'; then
+        echo '<table><tr><th>Key</th><th>Value</th></tr>'
+        env | grep '^DEMO_' | sort | while IFS='=' read -r k v; do
+          echo "<tr><td><code>$(esc "$k")</code></td><td>$(esc "$v")</td></tr>"
+        done
+        echo '</table>'
+      else
+        echo '<p><em>none set — try <code>--set env.plan=pro</code></em></p>'
+      fi
+      echo '</body></html>'
+    } > "$OUT"
+
+    exec nginx -g 'daemon off;'

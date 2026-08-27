@@ -1,0 +1,44 @@
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: alpine
+  pullPolicy: IfNotPresent
+
+# Each key becomes an env var DEMO_<KEY, uppercased> on the container and
+# shows up in the rendered page's env-var table — edit here or via --set
+# to see values.yaml -> container env -> browser flow live.
+env: {}
+# example:
+#   plan: pro
+#   region: fra1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# PVC mounted at /data. The render script keeps a visit counter file there
+# — restart the pod and refresh the page: the counter keeps climbing
+# instead of resetting, proving the volume (not the container) holds state.
+persistence:
+  enabled: true
+  size: 256Mi
+  storageClassName: "" # empty = cluster default StorageClass
+  accessModes:
+    - ReadWriteOnce
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: "" # empty = no host rule, path "/" on whatever the controller's default backend receives
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""

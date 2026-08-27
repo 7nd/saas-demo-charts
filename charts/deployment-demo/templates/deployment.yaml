@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deployment-demo.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deployment-demo.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "deployment-demo.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "deployment-demo.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: deployment-demo
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/scripts/render.sh"]
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: DEMO_{{ $k | upper }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # Downward API: what the container actually got, not just what
+            # values.yaml asked for — the two match here because no
+            # LimitRange/quota is in play, but they don't have to.
+            - name: CPU_REQUEST_M
+              valueFrom:
+                resourceFieldRef:
+                  containerName: deployment-demo
+                  resource: requests.cpu
+                  divisor: "1m"
+            - name: MEM_REQUEST_MI
+              valueFrom:
+                resourceFieldRef:
+                  containerName: deployment-demo
+                  resource: requests.memory
+                  divisor: "1Mi"
+            - name: CPU_LIMIT_M
+              valueFrom:
+                resourceFieldRef:
+                  containerName: deployment-demo
+                  resource: limits.cpu
+                  divisor: "1m"
+            - name: MEM_LIMIT_MI
+              valueFrom:
+                resourceFieldRef:
+                  containerName: deployment-demo
+                  resource: limits.memory
+                  divisor: "1Mi"
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: render-script
+              mountPath: /scripts
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: render-script
+          configMap:
+            name: {{ include "deployment-demo.fullname" . }}-render
+            defaultMode: 0555
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "deployment-demo.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

@@ -22,6 +22,9 @@ Shows the everyday Deployment building blocks in one chart:
 - **env** — anything under `values.env` becomes `DEMO_<KEY>` on the
   container and shows up in a table on the page — `--set env.plan=pro`
   and refresh to see it appear.
+- **Placement** — `nodeSelector` (empty by default); the demo cluster
+  pins these releases to `node-group: workload` via the HelmRelease's
+  values, not this chart's own default.
 
 Local smoke test (no cluster needed):
 

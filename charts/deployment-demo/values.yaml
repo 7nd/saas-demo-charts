@@ -1,5 +1,9 @@
 replicaCount: 1
 
+nodeSelector: {}
+# example:
+#   node-group: workload
+
 image:
   repository: nginx
   tag: alpine

@@ -1,98 +1,109 @@
 # Интеграция с кластером: HelmRelease как экземпляр SaaS-приложения
 
-Этот документ — не про то, как устроен чарт (см. корневой
-[README.md](../README.md)), а про то, как **внешняя система** (бэкенд
-твоего SaaS, панель управления, provisioning-сервис) заводит, меняет и
-сносит экземпляры приложения для конкретных клиентов, разговаривая
-напрямую с Kubernetes API — без `kubectl`, без git, без доступа к
-инфраструктурному репозиторию.
+Этот документ описывает, как **внешняя система** (бэкенд твоего SaaS,
+панель управления, provisioning-сервис) заводит, меняет и сносит экземпляры
+приложения для конкретных клиентов, разговаривая напрямую с Kubernetes
+API — без `kubectl`, без git, без доступа к инфраструктурному репозиторию.
 
-Модель простая: **один клиент — один `HelmRelease`**. Пользователь
-регистрируется в твоём SaaS → бэкенд создаёт `HelmRelease` → через
-несколько секунд у клиента поднят под с его инстансом **и рабочий HTTPS
-URL** (`ingress` у чарта включён по умолчанию; `IngressClass` на стенде
-уже дефолтный, а TLS закрывает один wildcard-сертификат на всех клиентов
-разом — отдельно указывать ни то, ни другое не нужно). Апгрейд тарифа —
-патч того же объекта. Отключение клиента — удаление объекта. Для примера
-берём чарт `charts/deployment-demo` из этого репозитория: он не про
-конкретный продукт, зато честно показывает env-переменные, ресурсы и
-персистентность, которые в реальном SaaS будут отличаться по тарифу.
+Модель: **один клиент — один `HelmRelease`**. Пользователь регистрируется в
+твоём SaaS → бэкенд создаёт `HelmRelease` → через несколько секунд у
+клиента поднят под с его инстансом **и рабочий HTTPS URL** (`ingress` у
+чарта включён по умолчанию; `IngressClass` на стенде уже дефолтный, а TLS
+закрывает один wildcard-сертификат на всех клиентов разом — отдельно
+указывать ни то, ни другое не нужно). Апгрейд тарифа — патч того же
+объекта. Отключение клиента — удаление объекта. Для примера берём чарт
+`charts/deployment-demo` из этого репозитория: он не про конкретный
+продукт, зато честно показывает env-переменные, ресурсы и персистентность,
+которые в реальном SaaS будут отличаться по тарифу.
 
-## Что уже должно быть в кластере (и почему это не тема этого документа)
+Порядок ниже такой: сначала что нужно локально, чтобы вообще подступиться
+к кластеру; затем — что на этом кластере уже есть и настроено платформенной
+командой; и только потом — что провижининг-код делает и что в результате
+получает клиент.
 
-Чтобы `HelmRelease` вообще собрался, в кластере уже должен стоять Flux
-(`helm-controller`, `source-controller`) и должен быть заведён источник
-чарта — `GitRepository` на этот репозиторий (или `HelmRepository`, если
-чарт публикуется). Это уровень платформенной команды, разовая настройка,
-и в контексте интеграции внешнего бэкенда — чёрный ящик: провижининг-код
-ниже про это ничего не знает и знать не должен, он просто ссылается на
-уже существующий источник по имени (`sourceRef`).
+## Что нужно локально
 
-Всё, что нужно провижининг-бэкенду для *использования* уже настроенного
-кластера — это четыре вещи, которые платформенная команда выдаёт ему
-один раз:
+- `kubectl`, а в нём — kubeconfig с контекстом на нужный кластер
+  (`kubectl config current-context` должен показывать именно его). Нужен не
+  провижининг-бэкенду, а тебе (или платформенной команде) — один раз
+  прочитать три значения ниже и один раз применить RBAC-манифест. Сам
+  бэкенд в проде этот kubeconfig никогда не увидит.
+- `pip install kubernetes` — официальный Python-клиент
+  ([kubernetes-client/python](https://github.com/kubernetes-client/python)),
+  если собираешься гонять примеры кода ниже. `HelmRelease` — это CRD
+  Flux'а, а не встроенный тип Kubernetes, поэтому работаем не через
+  `AppsV1Api`/`CoreV1Api`, а через универсальный `CustomObjectsApi` с
+  `group`/`version`/`plural` этого CRD.
 
-1. **URL API-сервера** — `https://<адрес кластера>:6443`.
-2. **CA-сертификат кластера** — чтобы TLS-соединению можно было доверять
-   без `--insecure`.
-3. **Токен ServiceAccount**, у которого есть права **только** на
-   `HelmRelease` в одном namespace — не kubeconfig администратора.
-4. **Namespace**, в котором бэкенду разрешено создавать `HelmRelease`, и
-   имя TLS-секрета в этом namespace, которым уже закрыт HTTPS для всех
-   клиентов сразу (подробнее — в разделе про Ingress ниже).
+## Кластер, на котором это работает
 
-Второе-четвёртое — то, что платформенная команда заводит **один раз**
-(не на каждого клиента), применив вот такой манифест `kubectl apply`'ом
-(или его же — через тот самый Flux, но это уже другой документ). Ниже
-используем существующий на стенде namespace `demo` — именно там уже
-лежит нужный wildcard-сертификат:
+Вот что на этом стенде уже стоит и настроено — провижининг-код ничего из
+этого не разворачивает и не должен уметь разворачивать, это уровень
+платформенной команды:
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: saas-provisioner
-  namespace: demo
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: saas-provisioner
-  namespace: demo
-rules:
-  - apiGroups: ["helm.toolkit.fluxcd.io"]
-    resources: ["helmreleases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: saas-provisioner
-  namespace: demo
-subjects:
-  - kind: ServiceAccount
-    name: saas-provisioner
-    namespace: demo
-roleRef:
-  kind: Role
-  name: saas-provisioner
-  apiGroup: rbac.authorization.k8s.io
-```
+- **Flux** (`source-controller`, `helm-controller`) — уже установлен и
+  раскатывает саму платформу через GitOps (отдельный документ). Он же
+  умеет превращать объект `HelmRelease` в реальный `helm install`, откуда
+  бы этот объект ни появился.
+- **`GitRepository saas-demo-charts`** — уже зарегистрирован в
+  `flux-system` и указывает на этот репозиторий. `HelmRelease` тенанта
+  просто ссылается на него по имени (`sourceRef`) — провижининг-код не
+  знает и не должен знать, как чарт туда попал.
+- **Namespace `demo`** — уже существует, и в нём уже применено следующее:
 
-Обрати внимание: это `Role`, не `ClusterRole` — бэкенд не видит и не
-может тронуть ничего за пределами `demo`, и даже внутри неё — только
-`helmreleases`. Он физически не способен прочитать чужой Secret (включая
-тот самый TLS-секрет — читать его бэкенду и не нужно, только *ссылаться*
-на имя в спеке `HelmRelease`) или полезть в `Pod` соседнего namespace,
-даже если в его коде будет баг или он будет скомпрометирован.
+  - `ServiceAccount/saas-provisioner` + `Role`/`RoleBinding`,
+    ограничивающие провижининг-бэкенд **только** ресурсом `helmreleases`
+    внутри `demo` — не `ClusterRole`, не kubeconfig администратора:
 
-Токен для этого `ServiceAccount` (в проде — через `TokenRequest`
-API/проецируемый том, который сам ротируется; для примера — разовый
-`kubectl create token`, живёт ограниченное время) и CA кластера (это
-открытый сертификат, не секрет) отдаём бэкенду как обычные переменные
-окружения — никакого файла kubeconfig ему для этого не нужно. Все три
-значения достаются из уже настроенного kubeconfig (текущий `context`,
-`kubectl config current-context`, должен смотреть на нужный кластер):
+    ```yaml
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: saas-provisioner
+      namespace: demo
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: saas-provisioner
+      namespace: demo
+    rules:
+      - apiGroups: ["helm.toolkit.fluxcd.io"]
+        resources: ["helmreleases"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: saas-provisioner
+      namespace: demo
+    subjects:
+      - kind: ServiceAccount
+        name: saas-provisioner
+        namespace: demo
+    roleRef:
+      kind: Role
+      name: saas-provisioner
+      apiGroup: rbac.authorization.k8s.io
+    ```
+
+    Провижининг-бэкенд физически не способен прочитать чужой `Secret`
+    (включая TLS-секрет ниже — читать его не нужно, только *сослаться* на
+    имя в спеке `HelmRelease`) или полезть в `Pod` соседнего namespace,
+    даже если в его коде будет баг или он будет скомпрометирован.
+
+  - `Certificate/wildcard-demo` → `Secret/wildcard-demo-tls` — wildcard
+    TLS на весь `*.demo.hightps.online` уже выпущен и лежит в этом же
+    namespace.
+  - `ingress-nginx` — уже дефолтный `IngressClass` на кластере, указывать
+    его явно в `HelmRelease` не нужно.
+  - `external-dns` — уже работает в режиме `policy: sync` и следит за
+    каждым `Ingress`: DNS-запись в Cloudflare появляется и пропадает сама.
+
+Из всего этого провижининг-бэкенду в итоге нужны только три значения — и
+все три достаются локальным `kubectl` из уже настроенного kubeconfig
+(`kubectl config current-context` смотрит на нужный кластер), без
+редактирования файлов руками:
 
 ```sh
 # 1. URL API-сервера — берём из текущего кластера в kubeconfig,
@@ -110,18 +121,17 @@ export K8S_CA_CERT_PATH=ca.crt
 export K8S_TOKEN=$(kubectl create token saas-provisioner -n demo --duration=2h)
 ```
 
-## Клиент: официальная библиотека, без kubeconfig
+Эти три переменные (плюс сам namespace `demo` и имя TLS-секрета
+`wildcard-demo-tls`) — это всё, чем провижининг-бэкенд пользуется извне.
+Он получает их один раз как обычные переменные окружения — никакого файла
+kubeconfig ему для этого не нужно.
 
-`pip install kubernetes` — официальный Python-клиент
-([kubernetes-client/python](https://github.com/kubernetes-client/python)).
-`HelmRelease` — это CRD Flux'а, а не встроенный тип, поэтому работаем не
-через `AppsV1Api`/`CoreV1Api`, а через универсальный
-`CustomObjectsApi` с `group`/`version`/`plural` этого CRD.
+## Что делаем и что получаем
 
-### Авторизация: два случая, один код
+### Авторизация в коде: два случая, один результат
 
-У провижининг-бэкенда есть ровно два варианта, где он физически
-работает, и это меняет способ авторизации:
+У провижининг-бэкенда есть ровно два варианта, где он физически работает,
+и это меняет способ авторизации:
 
 - **Внутри кластера** (сам бэкенд — под в том же или другом кластере) —
   Kubernetes уже подложил ему токен ServiceAccount и CA-сертификат в
@@ -129,9 +139,9 @@ export K8S_TOKEN=$(kubectl create token saas-provisioner -n demo --duration=2h)
   переменные окружения `KUBERNETES_SERVICE_HOST`/`_PORT` в каждый под
   автоматически, без твоего участия. Библиотека умеет прочитать всё это
   сама — `config.load_incluster_config()`.
-- **Снаружи кластера** (наш сценарий выше: отдельный бэкенд, ему выдали
-  токен и CA руками) — авторизация собирается вручную из токена/CA,
-  которые лежат, например, в переменных окружения.
+- **Снаружи кластера** (сценарий из раздела выше: отдельный бэкенд, ему
+  выдали токен и CA руками) — авторизация собирается вручную из тех же
+  трёх переменных окружения.
 
 Проверять на глаз (например, наличие `KUBERNETES_SERVICE_HOST`) не
 нужно — та же проверка уже зашита в саму библиотеку:
@@ -167,24 +177,15 @@ def make_api() -> client.CustomObjectsApi:
     return client.CustomObjectsApi(client.ApiClient(cfg))
 ```
 
-Ветка "снаружи" — ровно те три переменные окружения из прошлого раздела
-(`K8S_API_SERVER`, `K8S_CA_CERT_PATH`, `K8S_TOKEN`). Дальше по коду
-CRUD-функции ничего не знают, какая из двух веток отработала — обе
+Ветка "снаружи" — ровно те три переменные окружения из предыдущего
+раздела (`K8S_API_SERVER`, `K8S_CA_CERT_PATH`, `K8S_TOKEN`). Дальше по
+коду CRUD-функции ничего не знают, какая из двух веток отработала — обе
 возвращают одинаковый `CustomObjectsApi`.
 
-## CRUD
+### Тело HelmRelease на одного клиента
 
-Тело `HelmRelease` на одного клиента — то же самое, что и в
-GitOps-раскатке, просто собирается кодом, а не лежит файлом в git.
-
-Ingress с HTTPS без единого лишнего действия на клиента: на стенде уже
-выпущен wildcard-сертификат на `*.demo.hightps.online`
-(`Certificate/wildcard-demo` → `Secret/wildcard-demo-tls`, оба в
-namespace `demo`). Мы просто ссылаемся на этот `Secret` в
-`ingress.tls.secretName` — Kubernetes не позволяет `Ingress` брать
-TLS-секрет из чужого namespace, поэтому и `HelmRelease` тенанта, и
-сертификат должны жить в одном и том же `demo`. cert-manager при этом
-вообще не вызывается — ни на создание тенанта, ни на его удаление:
+То же самое, что лежало бы файлом в git при GitOps-раскатке — здесь просто
+собирается кодом:
 
 ```python
 BASE_DOMAIN = "demo.hightps.online"
@@ -222,7 +223,13 @@ def helmrelease_spec(name: str, slug: str, plan: str) -> dict:
     }
 ```
 
-### Create — регистрация нового клиента
+`Ingress` ссылается на `Secret/wildcard-demo-tls` из раздела выше —
+Kubernetes не позволяет `Ingress` брать TLS-секрет из чужого namespace,
+поэтому и `HelmRelease` тенанта, и сам секрет обязаны жить в одном и том
+же `demo`. cert-manager при этом вообще не вызывается — ни на создание
+тенанта, ни на его удаление.
+
+### Делаем create → получаем зарегистрированного клиента
 
 ```python
 def create_tenant(api: client.CustomObjectsApi, slug: str, plan: str) -> int:
@@ -240,7 +247,9 @@ def create_tenant(api: client.CustomObjectsApi, slug: str, plan: str) -> int:
 [create] HelmRelease/tenant-wildcard создан, plan=pro, host=tenant-wildcard.demo.hightps.online
 ```
 
-### Read — ждём, пока `helm-controller` реально раскатит инстанс
+Пока это только запись в API — под ещё не поднят.
+
+### Делаем wait → получаем подтверждение, что инстанс реально работает
 
 Создание объекта в API — это не то же самое, что готовый под: между
 `create` и реальным `Running` проходит время на `helm install`. Опрашиваем
@@ -279,9 +288,8 @@ def wait_ready(api: client.CustomObjectsApi, slug: str, generation: int, timeout
 ```
 
 К этому моменту `Ingress` тоже реально поднят, `external-dns` уже успел
-завести CNAME в Cloudflare (`policy: sync` в `infrastructure/controllers/external-dns`
-инфраструктурного репозитория), и урл клиента отвечает по HTTPS с
-доверенным сертификатом — из интернета, не из кластера:
+завести CNAME в Cloudflare, и урл клиента отвечает по HTTPS с доверенным
+сертификатом — из интернета, не из кластера:
 
 ```sh
 curl -sv https://tenant-wildcard.demo.hightps.online/ 2>&1 | grep -i "subject\|issuer\|verify ok"
@@ -300,7 +308,7 @@ curl -s  https://tenant-wildcard.demo.hightps.online/ | grep DEMO_PLAN
 для нового тенанта работает мгновенно, без единого обращения к
 cert-manager/ACME.
 
-### Update — смена тарифа
+### Делаем update → получаем новый тариф на том же URL
 
 ```python
 def update_tenant_plan(api: client.CustomObjectsApi, slug: str, plan: str) -> int:
@@ -334,7 +342,7 @@ curl -s https://tenant-wildcard.demo.hightps.online/ | grep DEMO_PLAN
 <tr><td><code>DEMO_PLAN</code></td><td>enterprise</td></tr>
 ```
 
-### Delete — отключение клиента
+### Делаем delete → получаем полную очистку
 
 ```python
 def delete_tenant(api: client.CustomObjectsApi, slug: str) -> None:
@@ -374,106 +382,22 @@ wildcard-demo-tls   kubernetes.io/tls   2      4m42s
 считать клиента отключённым — опрашивай `get_namespaced_custom_object` до
 `ApiException` со `status == 404`, как в примере выше с `wait_ready`.)
 
-## Полный скрипт
+## Готовый к запуску пример
 
-```python
-import os
-import time
+Тот же код, что разобран по кусочкам выше, — одним файлом с комментариями,
+чтобы проследить логику от начала до конца:
+[`../examples/manage_tenant.py`](../examples/manage_tenant.py). Установка и
+переменные окружения — в [`../examples/README.md`](../examples/README.md):
 
-from kubernetes import client, config
-from kubernetes.config import ConfigException
-
-NAMESPACE = "demo"
-BASE_DOMAIN = "demo.hightps.online"
-WILDCARD_TLS_SECRET = "wildcard-demo-tls"
-GROUP, VERSION, PLURAL = "helm.toolkit.fluxcd.io", "v2", "helmreleases"
-
-
-def make_api() -> client.CustomObjectsApi:
-    try:
-        # бэкенд сам — под в кластере: токен/CA уже смонтированы Kubernetes'ом
-        config.load_incluster_config()
-        return client.CustomObjectsApi()
-    except ConfigException:
-        pass  # не под в кластере — авторизуемся токеном, см. раздел про RBAC/токен
-
-    cfg = client.Configuration()
-    cfg.host = os.environ["K8S_API_SERVER"]
-    cfg.ssl_ca_cert = os.environ["K8S_CA_CERT_PATH"]
-    cfg.api_key = {"authorization": f"Bearer {os.environ['K8S_TOKEN']}"}
-    return client.CustomObjectsApi(client.ApiClient(cfg))
-
-
-def helmrelease_spec(name: str, slug: str, plan: str) -> dict:
-    return {
-        "apiVersion": f"{GROUP}/{VERSION}",
-        "kind": "HelmRelease",
-        "metadata": {"name": name, "namespace": NAMESPACE},
-        "spec": {
-            "interval": "5m",
-            "chart": {
-                "spec": {
-                    "chart": "charts/deployment-demo",
-                    "sourceRef": {"kind": "GitRepository", "name": "saas-demo-charts", "namespace": "flux-system"},
-                    "reconcileStrategy": "Revision",
-                }
-            },
-            "install": {"remediation": {"retries": 3}},
-            "upgrade": {"remediation": {"retries": 3}},
-            "values": {
-                "ingress": {
-                    "host": f"tenant-{slug}.{BASE_DOMAIN}",
-                    "tls": {"enabled": True, "secretName": WILDCARD_TLS_SECRET},
-                },
-                "env": {"plan": plan},
-            },
-        },
-    }
-
-
-def create_tenant(api, slug, plan):
-    name = f"tenant-{slug}"
-    obj = api.create_namespaced_custom_object(group=GROUP, version=VERSION, namespace=NAMESPACE, plural=PLURAL,
-                                               body=helmrelease_spec(name, slug, plan))
-    return obj["metadata"]["generation"]
-
-
-def wait_ready(api, slug, generation, timeout=60):
-    name = f"tenant-{slug}"
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        obj = api.get_namespaced_custom_object(group=GROUP, version=VERSION, namespace=NAMESPACE, plural=PLURAL, name=name)
-        status = obj.get("status", {})
-        ready = next((c for c in status.get("conditions", []) if c["type"] == "Ready"), None)
-        if ready and status.get("observedGeneration") == generation and ready["status"] == "True":
-            return
-        time.sleep(2)
-    raise TimeoutError(f"{name} не готов за {timeout}s")
-
-
-def update_tenant_plan(api, slug, plan):
-    name = f"tenant-{slug}"
-    patch = {"spec": {"values": {"env": {"plan": plan}}}}
-    obj = api.patch_namespaced_custom_object(group=GROUP, version=VERSION, namespace=NAMESPACE, plural=PLURAL,
-                                              name=name, body=patch)
-    return obj["metadata"]["generation"]
-
-
-def delete_tenant(api, slug):
-    name = f"tenant-{slug}"
-    api.delete_namespaced_custom_object(group=GROUP, version=VERSION, namespace=NAMESPACE, plural=PLURAL, name=name)
-
-
-if __name__ == "__main__":
-    api = make_api()
-    gen = create_tenant(api, "acme", plan="pro")
-    wait_ready(api, "acme", gen)
-
-    gen = update_tenant_plan(api, "acme", plan="enterprise")
-    wait_ready(api, "acme", gen)
-
-    delete_tenant(api, "acme")
+```sh
+cd examples
+pip install -r requirements.txt
+python manage_tenant.py
 ```
+
+Скрипт сам проходит весь жизненный цикл одного тестового клиента —
+`create` → дождаться `Ready` → `update` тарифа → дождаться `Ready` →
+`delete` — печатая, что происходит на каждом шаге.
 
 ## Куда смотреть, если что-то пошло не так
 

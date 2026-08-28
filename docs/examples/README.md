@@ -31,6 +31,9 @@ curl -s https://stand-example.demo.hightps.online/ | grep DEMO_PLAN
 kubectl delete -f helmrelease.yaml
 ```
 
+Полный набор команд на каждый день (создать/проверить/патчить/удалить,
+с объяснением каждой) — [helmrelease-cheatsheet.md](helmrelease-cheatsheet.md).
+
 ## Вариант 2 — `raw-manifests.yaml` (без Flux/Helm вообще)
 
 Голые `Deployment`/`Service`/`Ingress`. Не показывает requests/limits/PVC

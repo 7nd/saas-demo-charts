@@ -9,6 +9,10 @@ image:
   tag: alpine
   pullPolicy: IfNotPresent
 
+imagePullSecrets: []
+# example (private registry):
+#   - name: registry-pull-secret
+
 # Each key becomes an env var DEMO_<KEY, uppercased> on the container and
 # shows up in the rendered page's env-var table — edit here or via --set
 # to see values.yaml -> container env -> browser flow live.

@@ -1,0 +1,81 @@
+# Совсем ленивый способ, без Flux/Helm вообще — голые Deployment/Service/
+# Ingress, kubectl apply -f и через несколько секунд есть рабочий HTTPS-урл.
+# Полезно, если под рукой нет прав на HelmRelease (см. helmrelease.yaml)
+# или просто не хочется тянуть чарт целиком ради быстрой проверки, что
+# ingress+wildcard-TLS+env вообще работают на этом кластере.
+#
+# За requests/limits + PVC + env-таблицу на странице (то, что реально
+# показывает чарт charts/deployment-demo) — используй helmrelease.yaml
+# или `helm template`, см. README.md рядом. Здесь — минимальный набор:
+# ресурсы заданы, но не показаны нигде на странице, это просто голая
+# nginx:alpine.
+#
+# Перед apply — замени ВСЕ ТРИ "stand-example-raw" (Deployment/Service
+# name, metadata.labels selector, Ingress host) на что-то своё.
+#
+# Предполагает только namespace demo + Secret/wildcard-demo-tls
+# (infrastructure/apps/demo-stands инфраструктурного репозитория) — ни
+# Flux, ни GitRepository, ни сам чарт не нужны.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stand-example-raw
+  namespace: demo
+  labels:
+    app: stand-example-raw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stand-example-raw
+  template:
+    metadata:
+      labels:
+        app: stand-example-raw
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine
+          env:
+            - name: DEMO_PLAN
+              value: lazy-demo
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stand-example-raw
+  namespace: demo
+spec:
+  selector:
+    app: stand-example-raw
+  ports:
+    - port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stand-example-raw
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [stand-example-raw.demo.hightps.online]
+      secretName: wildcard-demo-tls # БЕЗ cert-manager.io/cluster-issuer — секрет уже готов
+  rules:
+    - host: stand-example-raw.demo.hightps.online
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stand-example-raw
+                port:
+                  number: 80

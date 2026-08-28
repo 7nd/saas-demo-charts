@@ -25,6 +25,15 @@ Shows the everyday Deployment building blocks in one chart:
 - **Placement** — `nodeSelector` (empty by default); the demo cluster
   pins these releases to `node-group: workload` via the HelmRelease's
   values, not this chart's own default.
+- **imagePullSecrets** — (empty by default); set it to pull the container
+  from a private registry, e.g. `[{name: registry-pull-secret}]`.
+
+Как внешний бэкенд (не GitOps-репозиторий) провижинит, апгрейдит и сносит
+per-tenant инстанс этого чарта напрямую через Kubernetes API (Python) —
+см. [docs/kubernetes-api-integration.md](docs/kubernetes-api-integration.md).
+
+Ленивый kubectl apply одного стенда, без Python и без похода через git —
+готовые манифесты в [docs/examples](docs/examples).
 
 Local smoke test (no cluster needed):
 

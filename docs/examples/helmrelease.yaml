@@ -1,0 +1,56 @@
+# Ленивый способ поднять стенд на демо-кластере: kubectl apply этого
+# файла — и всё. Работает без git/PR/ожидания Flux-синка: HelmRelease —
+# обычный Custom Resource, helm-controller уже крутится в кластере и
+# подхватывает такие объекты откуда угодно, не только из тех, что Flux
+# сам применил из git. По сути — то же самое, что делает
+# create_tenant() в ../kubernetes-api-integration.md, просто руками и
+# без Python.
+#
+# Перед apply — замени ОБА "stand-example" (metadata.name и
+# ingress.host) на что-то своё, иначе столкнёшься с чужим стендом.
+#
+# Предполагает, что на кластере уже настроено (см. инфраструктурный
+# репозиторий unitum-demo-k8s-infra):
+#   - Flux (helm-controller) и GitRepository saas-demo-charts
+#     (infrastructure/sources/gitrepositories.yaml)
+#   - namespace demo + Certificate/wildcard-demo -> Secret/wildcard-demo-tls
+#     (infrastructure/apps/demo-stands)
+# Если что-то из этого отсутствует — см. raw-manifests.yaml, ему Flux не нужен.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: stand-example
+  namespace: demo
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: charts/deployment-demo
+      sourceRef:
+        kind: GitRepository
+        name: saas-demo-charts
+        namespace: flux-system
+      reconcileStrategy: Revision
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    ingress:
+      host: stand-example.demo.hightps.online
+      tls:
+        enabled: true
+        secretName: wildcard-demo-tls
+    env:
+      plan: lazy-demo
+    # Свой образ из приватного registry этого кластера (необязательно —
+    # по умолчанию чарт тянет публичный nginx:alpine, ничего добавлять
+    # не нужно). Секрет registry-pull-secret уже заведён в namespace demo,
+    # см. infrastructure/apps/registry/pull-secret.yaml:
+    # image:
+    #   repository: registry.hightps.online/my-app
+    #   tag: latest
+    # imagePullSecrets:
+    #   - name: registry-pull-secret # уже заведён в namespace demo

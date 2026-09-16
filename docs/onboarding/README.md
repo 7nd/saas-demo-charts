@@ -1,11 +1,23 @@
 # Онбординг клиента — скрипты
 
-`onboard-client.sh <slug>` / `offboard-client.sh <slug>` — весь процесс из
-плана (Forgejo-аккаунт + разовый импорт чарта, свой namespace и wildcard
-`*.<slug>-saas.hightps.online`, свой Nexus-логин, свой K8s self-service
-токен), одной командой. Оба прогнаны end-to-end на реальном стенде
-(`slug=test1`) — deploy-on-push, RBAC-изоляция и docker push/pull
+`onboard_client.py <slug>` / `offboard_client.py <slug>` — весь процесс
+одной командой: Forgejo-аккаунт клиента + разовый импорт чарта, живая
+базовая инфра (namespace, wildcard TLS, docker-доступ, deploy-on-push,
+self-service K8s-токен). Прогнаны end-to-end на реальном стенде
+(`slug=test3`/`test4`, параллельно, для честной проверки cross-client
+изоляции) — стенд, docker push/pull (включая **реальную** cross-client
+изоляцию — не соглашение об именовании, см. ниже), RBAC-изоляция
 подтверждены живыми запросами, не только по коду.
+
+Базовая инфра клиента раскатывается **тем же способом, которым сами
+показываем клиенту его SaaS**: не сырые манифесты в `kubectl apply -f -`,
+а `HelmRelease` поверх Helm-чарта в git — `GitRepository client-infra-chart`
++ чарт `ops/client-infra` (приватный репозиторий на этой же Forgejo, НЕ
+для клиентов). На каждого клиента онбординг создаёт один маленький
+`HelmRelease client-infra-<slug>` в `flux-system` (см. "Что делает
+`onboard_client.py`" ниже) — helm-controller на его основе раскатывает
+всё остальное. Офбординг — один `kubectl delete helmrelease`, всё
+остальное сносится каскадом.
 
 ## Предварительно (один раз, не на каждого клиента)
 
@@ -15,39 +27,63 @@
 ### Forgejo (`git.${BASE_DOMAIN}`)
 
 Отдельный инстанс (`infrastructure/apps/git-stands` в
-`unitum-demo-k8s-infra`) — **не** тот же, что у agents-стенда. Канонический
-чарт живёт там как `showcase/sqas-demo-chart` — разовый mirror-импорт с
-GitHub (не живая синхронизация, GitHub остаётся основным репозиторием
-разработки):
+`unitum-demo-k8s-infra`) — **не** тот же, что у agents-стенда.
+
+Два репозитория на нём, оба разовым mirror-импортом (не живая
+синхронизация — GitHub остаётся основным репозиторием разработки для
+обоих):
 
 ```sh
+# Канонический чарт, раздаётся клиентам
 git clone --mirror https://github.com/7nd/saas-demo-charts /tmp/canon.git
 git -C /tmp/canon.git push --mirror \
   "https://<forgejo-admin>:<pass>@git.${BASE_DOMAIN}/showcase/sqas-demo-chart.git"
+
+# Наш собственный чарт базовой инфры клиента — private, НЕ для клиентов
+git push --mirror \
+  "https://<forgejo-admin>:<pass>@git.${BASE_DOMAIN}/ops/client-infra.git"
 ```
 
-(Организация `showcase` и репозиторий заводятся один раз через Forgejo API
-— `POST /api/v1/orgs`, `POST /api/v1/orgs/showcase/repos`.)
+(Организации `showcase`/`ops` и репозитории в них заводятся один раз
+через Forgejo API — `POST /api/v1/orgs`, `POST /api/v1/orgs/<org>/repos`,
+`ops/client-infra` — с `"private": true`.)
 
-API-токен админа для `onboard-client.sh` — `git.${BASE_DOMAIN}` → Settings
-→ Applications → Generate New Token (или через API: `POST
-/api/v1/users/<admin>/tokens`), нужны scopes `write:admin`,
-`write:repository`, `write:user`, `write:organization`.
+API-токен админа для `onboard_client.py`/`offboard_client.py` —
+`git.${BASE_DOMAIN}` → Settings → Applications → Generate New Token (или
+через API: `POST /api/v1/users/<admin>/tokens`), нужны scopes
+`write:admin`, `write:repository`, `write:user`, `write:organization`.
+
+### GitRepository на чарт `ops/client-infra` (`unitum-demo-k8s-infra`)
+
+`infrastructure/sources/gitrepositories.yaml` — `GitRepository
+client-infra-chart` в `flux-system`, смотрит на `ops/client-infra` через
+внутренний Service Forgejo (Flux не должен зависеть от внешнего DNS/TLS).
+Приватный репозиторий → `secretRef` на **отдельный** read-only токен
+(scope `read:repository`, не тот же, что `FORGEJO_ADMIN_TOKEN` у
+скриптов) — `infrastructure/sources/client-infra-chart-repo-auth.yaml`,
+пароль в SOPS (`git_stands_flux_read_token`).
 
 ### Nexus (`nexus.${BASE_DOMAIN}` / docker на `docker.${BASE_DOMAIN}:5000`)
 
-Docker registry API включается values-ключом
+Docker registry API на **основном** порту 5000 включается values-ключом
 `nexus.docker.registries[]` в HelmRelease (уже в
-`infrastructure/apps/nexus/release.yaml`) — чарт сам заводит Service+Ingress
-под отдельный порт. Сам docker-репозиторий внутри Nexus чарт не создаёт —
-разово через REST API (админ-креды — `nexus_admin_password` в SOPS):
+`infrastructure/apps/nexus/release.yaml`) — под общий,
+**pull-only** репозиторий демо-образов `docker-clients` (см. "Про
+изоляцию push" ниже — на push туда клиенты больше не получают доступа).
+Персональные docker-хосты клиентов (`<slug>.docker.${BASE_DOMAIN}`) —
+не через этот механизм, а через `Certificate wildcard-docker`
+(`infrastructure/apps/nexus/wildcard-docker-certificate.yaml`,
+`*.docker.${BASE_DOMAIN}`) + Service/Ingress, которые заводит сам чарт
+`ops/client-infra` на каждого клиента (шаблон `nexus-docker.yaml`).
+
+Сам `docker-clients` репозиторий и read-only роль на него внутри Nexus
+чарт не создаёт — разово через REST API (админ-креды —
+`nexus_admin_password` в SOPS):
 
 ```sh
 AUTH="admin:<пароль>"
 BASE="https://nexus.${BASE_DOMAIN}/service/rest/v1"
 
-# Docker Bearer Token Realm — не обязателен при forceBasicAuth:true (ниже),
-# но не мешает, включаем для порядка:
 curl -u "$AUTH" -X PUT "$BASE/security/realms/active" \
   -H "Content-Type: application/json" -d '["NexusAuthenticatingRealm","DockerToken"]'
 
@@ -57,15 +93,13 @@ curl -u "$AUTH" -X POST "$BASE/repositories/docker/hosted" -H "Content-Type: app
   "docker": {"v1Enabled": false, "forceBasicAuth": true, "httpPort": 5000}
 }'
 
-# ОДНА общая роль на всех клиентов — см. "Про изоляцию push" ниже, почему
-# не per-client Content Selector:
+# Read-only — все клиенты получают эту роль на общие демо-образы,
+# ничего больше (см. "Про изоляцию push" ниже):
 curl -u "$AUTH" -X POST "$BASE/security/roles" -H "Content-Type: application/json" -d '{
-  "id": "docker-clients-push", "name": "docker-clients-push",
+  "id": "docker-shared-pull", "name": "docker-shared-pull",
   "privileges": [
     "nx-repository-view-docker-docker-clients-browse",
-    "nx-repository-view-docker-docker-clients-read",
-    "nx-repository-view-docker-docker-clients-add",
-    "nx-repository-view-docker-docker-clients-edit"
+    "nx-repository-view-docker-docker-clients-read"
   ],
   "roles": []
 }'
@@ -84,34 +118,40 @@ curl -u "$AUTH" -X POST "$BASE/security/roles" -H "Content-Type: application/jso
 
 Изначально план предполагал Content Selectors — ограничить каждого
 клиента push+pull только на свой префикс `client-<slug>/*` внутри одного
-`docker-clients` репозитория, плюс общая pull-only роль на `shared/*`.
-**Проверено живьём и не работает**: Content Selector в Nexus не может
-матчить компонент, которого ещё не существует — первый `docker push`
-нового имени образа падает `403`, потому что selector не в состоянии
-сопоставить ещё-не-существующую координату. Это задокументированное
-ограничение Nexus для Docker-формата (в отличие от Maven/npm, где
-координата известна из самого пути аплоада).
+`docker-clients` репозитория. **Проверено живьём и не работает**: Content
+Selector в Nexus не может матчить компонент, которого ещё не
+существует — первый `docker push` нового имени образа падает `403`,
+потому что selector не в состоянии сопоставить ещё-не-существующую
+координату. Задокументированное ограничение Nexus для Docker-формата (в
+отличие от Maven/npm, где координата известна из самого пути аплоада).
 
-Поэтому — **одна общая роль `docker-clients-push`** на весь репозиторий:
-любой клиент может push+pull ЛЮБОЙ образ в `docker-clients`, не только
-свой. Изоляция — соглашение об именовании (`docker.${BASE_DOMAIN}/<slug>/...`),
-не техническая граница. Приемлемо для демо/trial. Если понадобится
-жёсткая изоляция — единственный подтверждённо рабочий вариант в Nexus
-это отдельный hosted-репозиторий на клиента (свой порт/Ingress/сертификат
-на каждого — ощутимо дороже по инфраструктуре, требует правки
-`infrastructure/apps/nexus/release.yaml` на каждого нового клиента, то
-есть уже не чисто REST-API-шный онбординг).
+Следующий вариант — одна общая push-роль на весь `docker-clients` —
+тоже был в проекте, но давал только **soft**-изоляцию (соглашение об
+именовании, не техническая граница: любой клиент технически может
+прочитать/перезаписать образ другого).
+
+Текущая схема даёт **настоящую** изоляцию: у каждого клиента —
+отдельный Nexus hosted-репозиторий (`docker-<slug>`, свой httpPort,
+`onboard_client.py` подбирает следующий свободный) и отдельный хост
+(`<slug>.docker.${BASE_DOMAIN}`, через wildcard-сертификат
+`wildcard-docker`). Роль клиента — push+pull только на СВОЙ репозиторий
+плюс read-only на общий `docker-clients` (демо-образы). Подтверждено
+живьём: кредами клиента A push на хост клиента B → `403`; тот же push на
+общий `docker-clients` (без выданного add/edit) → тоже `403`; push на
+СВОЙ хост → `202`.
 
 ## Онбординг/офбординг клиента
 
 ```sh
+pip install -r requirements.txt
+
 export FORGEJO_ADMIN_TOKEN=...
 export NEXUS_ADMIN_USER=admin
 export NEXUS_ADMIN_PASSWORD=...
 export KUBECONFIG=...
 
-./onboard-client.sh acme     # печатает URL стенда, Forgejo-креды, Nexus-креды, K8s-токен
-./offboard-client.sh acme    # сносит всё это обратно
+./onboard_client.py acme     # печатает URL стенда, Forgejo-креды, Nexus-креды, K8s-токен
+./offboard_client.py acme    # сносит всё это обратно
 ```
 
 Оба скрипта читают `BASE_DOMAIN`/`FORGEJO_URL`/`NEXUS_URL`/
@@ -119,45 +159,52 @@ export KUBECONFIG=...
 (`hightps.online`, `showcase/sqas-demo-chart`) — переопредели, если стенд
 другой.
 
-### Что именно делает `onboard-client.sh` (по шагам)
+### Что именно делает `onboard_client.py` (по шагам)
 
 1. Forgejo-аккаунт `client-<slug>` (REST API, `must_change_password: false`).
-2. Пустой репозиторий под этим аккаунтом.
-3. **Разовый импорт** — `git clone --mirror` канонического
-   `showcase/sqas-demo-chart` → `git push --mirror` в репозиторий клиента.
-   Не живой fork/sync: дальше клиент сам решает, что делать со своей копией.
-4. Nexus-пользователь клиента, роль `docker-clients-push`.
-5. Kubernetes, всё одним `kubectl apply -f -` (без git-коммита в
-   `unitum-demo-k8s-infra` — см. план, сознательно развязано от корневого
-   app-of-apps):
+2. Пустой репозиторий под этим аккаунтом + **разовый импорт**
+   (`git clone --mirror` канонического `showcase/sqas-demo-chart` →
+   `git push --mirror` в репозиторий клиента; не живой fork/sync —
+   дальше клиент сам решает, что делать со своей копией).
+3. Nexus: свой hosted docker-репозиторий (`docker-<slug>`, свободный
+   порт), push-роль только на него + read-only роль `docker-shared-pull`
+   на общие демо-образы, пользователь клиента с обеими.
+4. **Один `HelmRelease client-infra-<slug>`** в `flux-system` (чарт
+   `ops/client-infra`, `values`: slug/докер-порт/докер-креды/URL
+   репозитория клиента) — helm-controller раскатывает из него:
    - `Namespace <slug>-saas`
-   - `Certificate` — свой wildcard `*.<slug>-saas.${BASE_DOMAIN}` через
-     уже существующий `ClusterIssuer letsencrypt` (никакого исключения из
-     external-dns для этого поддомена — в отличие от `demo.${BASE_DOMAIN}`,
-     клиент должен открыть урл в реальном браузере, DNS-записи нужны
-     по-настоящему)
-   - `Secret/registry-pull-secret` (`dockerconfigjson`, креды клиента же
-     из шага 4) — на случай если решит использовать свой образ
-   - `GitRepository client-<slug>` (в `flux-system`) → личный репозиторий
+   - `Certificate` — свой wildcard `*.<slug>-saas.${BASE_DOMAIN}`
+   - `Secret registry-pull-secret` (dockerconfigjson, креды из шага 3)
+   - `GitRepository client-<slug>` (в `flux-system`) → репозиторий
      клиента на Forgejo
-   - `HelmRelease app` — `chart.spec.sourceRef` смотрит на ЭТОТ
-     `GitRepository`, не на общий `saas-demo-charts` — отсюда
-     deploy-on-push: клиент пушит в свой репозиторий, Flux сам подхватывает
-     (`reconcileStrategy: Revision`)
+   - `HelmRelease app` — `sourceRef` на этот `GitRepository`, отсюда
+     deploy-on-push (`reconcileStrategy: Revision`)
    - `ServiceAccount`/`Role`/`RoleBinding saas-provisioner` — полный CRUD
      на `helmreleases`, но **только в своём namespace** (проверено
-     `kubectl auth can-i` с реальным токеном на чужой namespace — `no`)
-6. K8s-токен (`kubectl create token`, 30 дней) + всё вышеперечисленное —
+     `kubectl auth can-i --as=system:serviceaccount:<ns>:saas-provisioner`
+     на чужой namespace — `no`)
+   - персональный docker-хост клиента (`Service`+`Ingress` в `nexus`)
+
+   Скрипт дожидается `Ready=True` у `HelmRelease client-infra-<slug>`,
+   прежде чем печатать сводку — установка реально проверена, не просто
+   отправлена.
+5. K8s-токен (`kubectl create token`, 30 дней) + всё вышеперечисленное —
    единым блоком в stdout.
 
-### Известные грабли
+`offboard_client.py` — в обратном порядке: `kubectl delete helmrelease
+client-infra-<slug>` (и дожидается его реального исчезновения — снимается
+только после helm uninstall, каскадно уносит namespace/certificate/
+secret/GitRepository приложения/RBAC/персональный docker-хост), затем
+Nexus-репозиторий/роль/пользователь клиента, затем Forgejo (репозиторий
+**до** аккаунта — Forgejo не даёт удалить пользователя, пока за ним есть
+репозиторий, `422 user still has ownership of repositories`).
 
-- **bash 3.2 (дефолтный `/bin/bash` на macOS).** Командная подстановка
-  `$(python3 -c ...)`, если это не единственная правая часть присваивания
-  переменной (например, инлайн внутри `curl -d "$(...)"`), в этой версии
-  bash ломает JSON на куски — проверено живьём, не гипотетически. Оба
-  скрипта поэтому везде сначала `VAR="$(python3 ...)"` отдельной строкой,
-  потом `curl -d "$VAR"` — не сворачивать обратно "для краткости".
-- Forgejo не даёт удалить пользователя, пока за ним есть репозиторий
-  (`user still has ownership of repositories`, `422`) — `offboard-client.sh`
-  явно удаляет репозиторий отдельным вызовом ДО удаления аккаунта.
+Полный снос без архивирования — офбординг теряет и образы клиента в его
+персональном Nexus-репозитории. Согласуется с тем, что офбординг везде
+работает так же (namespace, Forgejo-репозиторий).
+
+### Дальше
+
+Со временем `onboarding_common.py` может стать основой admin-консоли или
+личного кабинета клиента вместо CLI-скриптов — не в этой итерации, здесь
+только зафиксировано намерение.

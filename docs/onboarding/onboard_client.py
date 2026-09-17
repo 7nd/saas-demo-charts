@@ -155,6 +155,11 @@ def main() -> None:
     k8s_token = create_service_account_token(namespace, duration=cfg.token_duration)
     k8s_server = k8s_api_server()
 
+    # CI examples/tenant-api (.forgejo/workflows/tenant-api.yml) деплоит
+    # его тем же self-service токеном — не заводим отдельный секрет/RBAC.
+    forgejo_set_repo_action_secret(cfg, fg, client_user, CLIENT_REPO, "K8S_TOKEN", k8s_token)
+    forgejo_set_repo_action_secret(cfg, fg, client_user, CLIENT_REPO, "K8S_API_SERVER", k8s_server)
+
     # ── 5. Сводка ────────────────────────────────────────────────────────
     print(f"""
 ================================================================
@@ -185,12 +190,18 @@ docker build), запушит в твой registry и обновит стенд.
 Kubernetes self-service (namespace {namespace}):
   K8S_API_SERVER={k8s_server}
   K8S_TOKEN={k8s_token}
-  (токен на {cfg.token_duration}, перевыпуск: kubectl create token saas-provisioner -n {namespace} --duration=...)
+  (токен на {cfg.token_duration}, перевыпуск: kubectl create token saas-provisioner -n {namespace} --duration=...
+  тот же токен лежит в CI-секретах K8S_TOKEN/K8S_API_SERVER репозитория —
+  если перевыпускаешь руками, обнови и там)
 
 Дальше клиент может:
   - пушить в свой Forgejo-репозиторий -> стенд обновится сам (см. helmrelease-cheatsheet.md)
   - создавать свои HelmRelease в {namespace} через K8S_TOKEN (examples/manage_tenant.py,
     поменять NAMESPACE="{namespace}" и BASE_DOMAIN="{slug}-saas.{cfg.base_domain}")
+  - задеплоить examples/tenant-api — референс REST API для провижининга
+    СВОИХ тенантов (просто пушь в examples/tenant-api/**, CI сама
+    соберёт и задеплоит тем же self-service токеном — подробности и
+    модель авторизации в examples/README.md)
 ================================================================
 """)
 

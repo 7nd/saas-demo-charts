@@ -1,0 +1,46 @@
+# Применяется CI (.forgejo/workflows/tenant-api.yml) — image ниже
+# переписывается на свежесобранный тег перед каждым kubectl apply,
+# руками не редактировать (затрётся следующим билдом). automountServiceAccountToken:
+# false — намеренно: сервис не должен уметь авторизовать запрос сам,
+# он прокидывает Bearer-токен вызывающего прямо в K8s API (см. tenant_api.py,
+# ../README.md "Авторизация").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tenant-api
+  template:
+    metadata:
+      labels:
+        app: tenant-api
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: registry-pull-secret
+      containers:
+        - name: tenant-api
+          image: __IMAGE__
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-api
+spec:
+  selector:
+    app: tenant-api
+  ports:
+    - port: 8080
+      targetPort: 8080

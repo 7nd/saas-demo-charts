@@ -68,7 +68,7 @@ class Config:
             ),
             nexus_url=os.environ.get("NEXUS_URL", f"https://nexus.{base_domain}"),
             canonical_owner=os.environ.get("CANONICAL_OWNER", "showcase"),
-            canonical_repo=os.environ.get("CANONICAL_REPO", "sqas-demo-chart"),
+            canonical_repo=os.environ.get("CANONICAL_REPO", "saas-demo-provider"),
             token_duration=os.environ.get("TOKEN_DURATION", "720h"),
             forgejo_admin_token=required("FORGEJO_ADMIN_TOKEN"),
             nexus_admin_user=required("NEXUS_ADMIN_USER"),

@@ -63,7 +63,7 @@ from onboarding_common import (
     wait_helmrelease_ready,
 )
 
-CLIENT_REPO = "sqas-demo-chart"
+CLIENT_REPO = "saas-demo-provider"
 
 
 def random_password(length: int = 24) -> str:

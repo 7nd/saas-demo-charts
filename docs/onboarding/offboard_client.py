@@ -43,7 +43,7 @@ from onboarding_common import (
     wait_helmrelease_gone,
 )
 
-CLIENT_REPO = "sqas-demo-chart"
+CLIENT_REPO = "saas-demo-provider"
 
 
 def main() -> None:

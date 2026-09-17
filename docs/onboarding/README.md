@@ -11,10 +11,10 @@ end-to-end на реальном стенде (`slug=test3`/`test4`, парал�
 только по коду.
 
 Самый простой путь для клиента — вообще не трогать `docker`/`kubectl`
-руками: правишь `app/index.html` в своём репозитории и пушишь, CI
-(`.forgejo/workflows/build.yml`, свой раннер на каждого клиента, без
-Docker/DinD — BuildKit) сама собирает образ, пушит в твой же personal
-registry и обновляет стенд.
+руками: правишь `03-build-your-image/index.html` в своём репозитории и
+пушишь, CI (`.forgejo/workflows/build.yml`, свой раннер на каждого
+клиента, без Docker/DinD — BuildKit) сама собирает образ, пушит в твой
+же personal registry и обновляет стенд.
 
 Базовая инфра клиента раскатывается **тем же способом, которым сами
 показываем клиенту его SaaS**: не сырые манифесты в `kubectl apply -f -`,
@@ -40,24 +40,22 @@ registry и обновляет стенд.
 регистрации; все репозитории клиентов приватные, все аккаунты заводит
 только `onboard_client.py` через admin API.
 
-Два репозитория на нём, оба разовым mirror-импортом (не живая
-синхронизация — GitHub остаётся основным репозиторием разработки для
-обоих):
+Два репозитория на нём, оба заводятся один раз через Forgejo API
+(`POST /api/v1/orgs`, `POST /api/v1/orgs/<org>/repos`):
 
 ```sh
-# Канонический чарт, раздаётся клиентам
-git clone --mirror https://github.com/7nd/saas-demo-charts /tmp/canon.git
-git -C /tmp/canon.git push --mirror \
-  "https://<forgejo-admin>:<pass>@git.${BASE_DOMAIN}/showcase/sqas-demo-chart.git"
+# Канонический клиентский референс, раздаётся клиентам — родной Forgejo-
+# репозиторий (не mirror откуда-то), пушится напрямую из локального клона:
+git push "https://<forgejo-admin>:<pass>@git.${BASE_DOMAIN}/showcase/saas-demo-provider.git"
 
 # Наш собственный чарт базовой инфры клиента — private, НЕ для клиентов
 git push --mirror \
   "https://<forgejo-admin>:<pass>@git.${BASE_DOMAIN}/ops/client-infra.git"
 ```
 
-(Организации `showcase`/`ops` и репозитории в них заводятся один раз
-через Forgejo API — `POST /api/v1/orgs`, `POST /api/v1/orgs/<org>/repos`,
-`ops/client-infra` — с `"private": true`.)
+(`ops/client-infra` — с `"private": true`, `showcase/saas-demo-provider`
+— публичный внутри инстанса, но сам инстанс закрыт для анонимов целиком,
+см. ниже.)
 
 API-токен админа для `onboard_client.py`/`offboard_client.py` —
 `git.${BASE_DOMAIN}` → Settings → Applications → Generate New Token (или
@@ -185,15 +183,15 @@ export KUBECONFIG=...
 
 Оба скрипта читают `BASE_DOMAIN`/`FORGEJO_URL`/`NEXUS_URL`/
 `CANONICAL_OWNER`/`CANONICAL_REPO` из окружения с разумными дефолтами
-(`hightps.online`, `showcase/sqas-demo-chart`) — переопредели, если стенд
-другой.
+(`hightps.online`, `showcase/saas-demo-provider`) — переопредели, если
+стенд другой.
 
 ### Что именно делает `onboard_client.py` (по шагам)
 
 1. Forgejo-аккаунт `client-<slug>` (REST API, `must_change_password: false`).
 2. **Приватный** репозиторий под этим аккаунтом (виден только ему) +
    **разовый импорт** (`git clone --mirror` канонического
-   `showcase/sqas-demo-chart` → `git push --mirror` в репозиторий
+   `showcase/saas-demo-provider` → `git push --mirror` в репозиторий
    клиента; не живой fork/sync — дальше клиент сам решает, что делать со
    своей копией) + отдельный read-only токен (scope `read:repository`)
    **под аккаунтом самого клиента** — не его логин-пароль, узкий токен

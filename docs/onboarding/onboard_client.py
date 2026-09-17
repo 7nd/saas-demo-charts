@@ -50,7 +50,9 @@ from onboarding_common import (
     forgejo_create_repo,
     forgejo_create_user,
     forgejo_mirror_import,
+    forgejo_repo_runner_registration_token,
     forgejo_session,
+    forgejo_set_repo_action_secret,
     k8s_api_server,
     k8s_custom_api,
     next_free_docker_port,
@@ -103,6 +105,11 @@ def main() -> None:
     # unitum-demo-k8s-infra/infrastructure/sources.
     client_repo_token = forgejo_create_client_read_token(cfg, client_user, client_password)
 
+    # CI-раннер этого клиента (ops/client-infra, блок C) регистрируется
+    # repo-scoped токеном — физически ограничен этим репозиторием, не
+    # общий на всех клиентов.
+    runner_token = forgejo_repo_runner_registration_token(cfg, fg, client_user, CLIENT_REPO)
+
     # ── 2. Nexus: пользователь + СВОЙ docker-репозиторий ──────────────────
     print(f"==> завожу Nexus docker-репозиторий {docker_repo_name}")
     docker_port = next_free_docker_port(cfg)
@@ -120,6 +127,12 @@ def main() -> None:
         roles=[docker_push_role, "docker-shared-pull"],
     )
 
+    # CI клиента (.forgejo/workflows/build.yml в его репозитории) логинится
+    # в СВОЙ registry этими же кредами — без секретов джоба падает на шаге логина.
+    forgejo_set_repo_action_secret(cfg, fg, client_user, CLIENT_REPO, "DOCKER_HOST", docker_host)
+    forgejo_set_repo_action_secret(cfg, fg, client_user, CLIENT_REPO, "DOCKER_USER", client_user)
+    forgejo_set_repo_action_secret(cfg, fg, client_user, CLIENT_REPO, "DOCKER_PASSWORD", nexus_password)
+
     # ── 3. Базовая инфра клиента — один HelmRelease поверх ops/client-infra
     print(f"==> раскатываю HelmRelease client-infra-{slug}")
     docker_auth_json = docker_config_json(docker_host, client_user, nexus_password)
@@ -132,6 +145,7 @@ def main() -> None:
         client_repo_url=client_repo_url,
         client_repo_user=client_user,
         client_repo_token=client_repo_token,
+        ci_runner_registration_token=runner_token,
     )
     api = k8s_custom_api()
     generation = apply_helmrelease(api, hr)
@@ -162,6 +176,11 @@ Docker registry (свой, изолирован от других клиенто
   imagePullSecret "registry-pull-secret" уже лежит в {namespace} — укажи
   values.imagePullSecrets: [{{name: registry-pull-secret}}] в своём HelmRelease,
   если решишь использовать свой образ вместо стокового nginx:alpine.
+
+CI (проще ручного docker push): поправь app/index.html в своём репозитории
+и запушь — .forgejo/workflows/build.yml сама соберёт образ (BuildKit, без
+docker build), запушит в твой registry и обновит стенд. Ничего
+дополнительно настраивать не нужно — свой раннер и все секреты уже готовы.
 
 Kubernetes self-service (namespace {namespace}):
   K8S_API_SERVER={k8s_server}

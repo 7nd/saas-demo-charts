@@ -3,11 +3,18 @@
 `onboard_client.py <slug>` / `offboard_client.py <slug>` — весь процесс
 одной командой: Forgejo-аккаунт клиента + разовый импорт чарта, живая
 базовая инфра (namespace, wildcard TLS, docker-доступ, deploy-on-push,
-self-service K8s-токен). Прогнаны end-to-end на реальном стенде
-(`slug=test3`/`test4`, параллельно, для честной проверки cross-client
-изоляции) — стенд, docker push/pull (включая **реальную** cross-client
-изоляцию — не соглашение об именовании, см. ниже), RBAC-изоляция
-подтверждены живыми запросами, не только по коду.
+self-service K8s-токен, персональный CI на сборку своего образа). Прогнаны
+end-to-end на реальном стенде (`slug=test3`/`test4`, параллельно, для
+честной проверки cross-client изоляции) — стенд, docker push/pull
+(включая **реальную** cross-client изоляцию — не соглашение об
+именовании, см. ниже), RBAC-изоляция подтверждены живыми запросами, не
+только по коду.
+
+Самый простой путь для клиента — вообще не трогать `docker`/`kubectl`
+руками: правишь `app/index.html` в своём репозитории и пушишь, CI
+(`.forgejo/workflows/build.yml`, свой раннер на каждого клиента, без
+Docker/DinD — BuildKit) сама собирает образ, пушит в твой же personal
+registry и обновляет стенд.
 
 Базовая инфра клиента раскатывается **тем же способом, которым сами
 показываем клиенту его SaaS**: не сырые манифесты в `kubectl apply -f -`,
@@ -66,6 +73,24 @@ client-infra-chart` в `flux-system`, смотрит на `ops/client-infra` ч�
 (scope `read:repository`, не тот же, что `FORGEJO_ADMIN_TOKEN` у
 скриптов) — `infrastructure/sources/client-infra-chart-repo-auth.yaml`,
 пароль в SOPS (`git_stands_flux_read_token`).
+
+### Forgejo Actions (CI на сборку образа клиента)
+
+Сервер-сайд фича включена один раз (`gitea.config.actions.ENABLED: true`
+в `release.yaml`) — сам раннер **не общий инстанс-wide**, а свой на
+каждого клиента, заводит `ops/client-infra` (шаблоны `ci-runner.yaml`/
+`ci-buildkitd.yaml`) при онбординге. Ничего дополнительно бутстрапить не
+нужно.
+
+Почему так, а не один shared-раннер: раннер регистрируется **repo-scoped**
+токеном (`GET /repos/{owner}/{repo}/actions/runners/registration-token`)
+— физически ограничен ОДНИМ репозиторием, поэтому исполняет джобы
+`host`-режимом (голые процессы, без Docker/DinD вовсе) безопасно — делить
+процесс не с кем. Сборку образа делает не сам раннер, а отдельный
+`ci-buildkitd` (BuildKit, rootless, без `privileged`) рядом, в том же
+namespace — раннер лишь ходит к нему `buildctl`-ом. Ни разу нигде в этой
+цепочке не появляется ни Docker-демон, ни kaniko (архивирован Google в
+июне 2025, не рассматривался).
 
 ### Nexus (`nexus.${BASE_DOMAIN}` / docker на `docker.${BASE_DOMAIN}:5000`)
 
@@ -173,14 +198,18 @@ export KUBECONFIG=...
    своей копией) + отдельный read-only токен (scope `read:repository`)
    **под аккаунтом самого клиента** — не его логин-пароль, узкий токен
    специально для Flux (тот же приём, что `client-infra-chart-repo-auth`
-   в `unitum-demo-k8s-infra`).
+   в `unitum-demo-k8s-infra`) — и repo-scoped токен регистрации CI-раннера
+   этого клиента (см. "Forgejo Actions" выше).
 3. Nexus: свой hosted docker-репозиторий (`docker-<slug>`, свободный
    порт), push-роль только на него + read-only роль `docker-shared-pull`
-   на общие демо-образы, пользователь клиента с обеими.
+   на общие демо-образы, пользователь клиента с обеими — и сразу же три
+   Forgejo Action secret'а на его репозитории (`DOCKER_HOST`/
+   `DOCKER_USER`/`DOCKER_PASSWORD`, теми же кредами) — без них CI есть, но
+   падает на шаге логина в реестр.
 4. **Один `HelmRelease client-infra-<slug>`** в `flux-system` (чарт
    `ops/client-infra`, `values`: slug/докер-порт/докер-креды/URL и
-   read-only токен репозитория клиента) — helm-controller раскатывает из
-   него:
+   read-only токен репозитория клиента/токен раннера) — helm-controller
+   раскатывает из него:
    - `Namespace <slug>-saas`
    - `Certificate` — свой wildcard `*.<slug>-saas.${BASE_DOMAIN}`
    - `Secret registry-pull-secret` (dockerconfigjson, креды из шага 3)
@@ -195,6 +224,9 @@ export KUBECONFIG=...
      `kubectl auth can-i --as=system:serviceaccount:<ns>:saas-provisioner`
      на чужой namespace — `no`)
    - персональный docker-хост клиента (`Service`+`Ingress` в `nexus`)
+   - персональный CI: `ci-runner` (Forgejo Actions раннер, `host`-режим,
+     без Docker/DinD) + `ci-buildkitd` (BuildKit, rootless, без
+     `privileged`) — оба только в его namespace, только на его репозиторий
 
    Скрипт дожидается `Ready=True` у `HelmRelease client-infra-<slug>`,
    прежде чем печатать сводку — установка реально проверена, не просто
@@ -205,10 +237,13 @@ export KUBECONFIG=...
 `offboard_client.py` — в обратном порядке: `kubectl delete helmrelease
 client-infra-<slug>` (и дожидается его реального исчезновения — снимается
 только после helm uninstall, каскадно уносит namespace/certificate/
-secret/GitRepository приложения/RBAC/персональный docker-хост), затем
-Nexus-репозиторий/роль/пользователь клиента, затем Forgejo (репозиторий
-**до** аккаунта — Forgejo не даёт удалить пользователя, пока за ним есть
-репозиторий, `422 user still has ownership of repositories`).
+secret/GitRepository приложения/RBAC/персональный docker-хост/CI-раннер+
+buildkitd), затем Nexus-репозиторий/роль/пользователь клиента, затем
+Forgejo (репозиторий **до** аккаунта — Forgejo не даёт удалить
+пользователя, пока за ним есть репозиторий, `422 user still has
+ownership of repositories`) — удаление репозитория заодно уносит и его
+repo-scoped регистрацию CI-раннера (отдельного API на это в этой версии
+Forgejo нет, только UI — явного шага для этого в скрипте поэтому тоже нет).
 
 Полный снос без архивирования — офбординг теряет и образы клиента в его
 персональном Nexus-репозитории. Согласуется с тем, что офбординг везде

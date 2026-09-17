@@ -9,6 +9,13 @@ image:
   tag: alpine
   pullPolicy: IfNotPresent
 
+# Дефолт запускает встроенный render-script (см. configmap-render.yaml) —
+# пусто ([]/null) означает "не переопределять", берётся entrypoint самого
+# образа. Именно это ставит CI (.forgejo/workflows/build.yml,
+# values.app-image.yaml) при переключении на собственный образ клиента —
+# иначе render-script перезатрёт его содержимое при старте пода.
+command: ["/bin/sh", "/scripts/render.sh"]
+
 imagePullSecrets: []
 # example (private registry):
 #   - name: registry-pull-secret

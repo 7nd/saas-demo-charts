@@ -27,7 +27,9 @@ spec:
         - name: deployment-demo
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "/scripts/render.sh"]
+          {{- with .Values.command }}
+          command: {{ toYaml . | nindent 12 }}
+          {{- end }}
           env:
             {{- range $k, $v := .Values.env }}
             - name: DEMO_{{ $k | upper }}

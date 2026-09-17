@@ -149,6 +149,22 @@ def forgejo_mirror_import(cfg: Config, client_user: str, client_password: str, c
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def forgejo_repo_runner_registration_token(cfg: Config, s: requests.Session, owner: str, repo: str) -> str:
+    """Repo-scoped токен регистрации CI-раннера — раннер, который его использует, физически ограничен ЭТИМ
+    репозиторием (см. ci-runner.yaml в ops/client-infra) — не общий раннер на всех клиентов."""
+    r = s.get(f"{cfg.forgejo_url}/api/v1/repos/{owner}/{repo}/actions/runners/registration-token")
+    r.raise_for_status()
+    return r.json()["token"]
+
+
+def forgejo_set_repo_action_secret(cfg: Config, s: requests.Session, owner: str, repo: str, name: str, value: str) -> None:
+    r = s.put(
+        f"{cfg.forgejo_url}/api/v1/repos/{owner}/{repo}/actions/secrets/{name}",
+        json={"data": value},
+    )
+    r.raise_for_status()
+
+
 # ── Nexus ────────────────────────────────────────────────────────────────
 
 
@@ -266,6 +282,7 @@ def client_infra_helmrelease(
     client_repo_url: str,
     client_repo_user: str,
     client_repo_token: str,
+    ci_runner_registration_token: str,
 ) -> dict:
     return {
         "apiVersion": f"{HR_GROUP}/{HR_VERSION}",
@@ -290,6 +307,7 @@ def client_infra_helmrelease(
                 "clientRepoURL": client_repo_url,
                 "clientRepoUser": client_repo_user,
                 "clientRepoToken": client_repo_token,
+                "ciRunnerRegistrationToken": ci_runner_registration_token,
             },
         },
     }

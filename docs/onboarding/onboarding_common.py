@@ -119,13 +119,29 @@ def forgejo_delete_user(cfg: Config, s: requests.Session, username: str) -> None
         r.raise_for_status()
 
 
+def forgejo_create_client_read_token(cfg: Config, client_user: str, client_password: str) -> str:
+    """Read-only токен (scope read:repository) под только что созданным аккаунтом клиента — Flux клонирует ЕГО
+    приватный репозиторий ИМ ЖЕ, но не его логин-паролём: тот же приём, что client-infra-chart-repo-auth
+    (infrastructure/sources/gitrepositories.yaml, unitum-demo-k8s-infra) — отдельный узкий токен, не основные креды."""
+    r = requests.post(
+        f"{cfg.forgejo_url}/api/v1/users/{client_user}/tokens",
+        auth=(client_user, client_password),
+        json={"name": "flux-read", "scopes": ["read:repository"]},
+    )
+    r.raise_for_status()
+    return r.json()["sha1"]
+
+
 def forgejo_mirror_import(cfg: Config, client_user: str, client_password: str, client_repo: str) -> None:
-    """Разовый mirror-импорт канонического чарта в репозиторий клиента (НЕ живой fork/sync)."""
+    """Разовый mirror-импорт канонического чарта в репозиторий клиента (НЕ живой fork/sync).
+
+    Инстанс закрыт для анонимов (REQUIRE_SIGNIN_VIEW, infrastructure/apps/git-stands/release.yaml)
+    — источник клонируем тоже с токеном, не голым URL."""
     workdir = tempfile.mkdtemp(prefix="onboard-mirror-")
     try:
-        src = f"{cfg.forgejo_url}/{cfg.canonical_owner}/{cfg.canonical_repo}.git"
-        dst_host = cfg.forgejo_url.split("://", 1)[1]
-        dst = f"https://{client_user}:{client_password}@{dst_host}/{client_user}/{client_repo}.git"
+        host = cfg.forgejo_url.split("://", 1)[1]
+        src = f"https://token:{cfg.forgejo_admin_token}@{host}/{cfg.canonical_owner}/{cfg.canonical_repo}.git"
+        dst = f"https://{client_user}:{client_password}@{host}/{client_user}/{client_repo}.git"
         bare = f"{workdir}/repo.git"
         subprocess.run(["git", "clone", "--mirror", "--quiet", src, bare], check=True)
         subprocess.run(["git", "-C", bare, "push", "--mirror", "--quiet", dst], check=True)
@@ -242,7 +258,14 @@ def k8s_custom_api() -> client.CustomObjectsApi:
 
 
 def client_infra_helmrelease(
-    slug: str, cfg: Config, *, docker_port: int, docker_auth_json: str, client_repo_url: str
+    slug: str,
+    cfg: Config,
+    *,
+    docker_port: int,
+    docker_auth_json: str,
+    client_repo_url: str,
+    client_repo_user: str,
+    client_repo_token: str,
 ) -> dict:
     return {
         "apiVersion": f"{HR_GROUP}/{HR_VERSION}",
@@ -265,6 +288,8 @@ def client_infra_helmrelease(
                 "nexusDockerPort": docker_port,
                 "dockerAuthJson": docker_auth_json,
                 "clientRepoURL": client_repo_url,
+                "clientRepoUser": client_repo_user,
+                "clientRepoToken": client_repo_token,
             },
         },
     }

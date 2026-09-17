@@ -27,7 +27,11 @@ self-service K8s-токен). Прогнаны end-to-end на реальном 
 ### Forgejo (`git.${BASE_DOMAIN}`)
 
 Отдельный инстанс (`infrastructure/apps/git-stands` в
-`unitum-demo-k8s-infra`) — **не** тот же, что у agents-стенда.
+`unitum-demo-k8s-infra`) — **не** тот же, что у agents-стенда. Закрыт для
+неавторизованных целиком (`REQUIRE_SIGNIN_VIEW`, `DISABLE_REGISTRATION` в
+`release.yaml`) — ни анонимного браузинга, ни самостоятельной
+регистрации; все репозитории клиентов приватные, все аккаунты заводит
+только `onboard_client.py` через admin API.
 
 Два репозитория на нём, оба разовым mirror-импортом (не живая
 синхронизация — GitHub остаётся основным репозиторием разработки для
@@ -162,21 +166,28 @@ export KUBECONFIG=...
 ### Что именно делает `onboard_client.py` (по шагам)
 
 1. Forgejo-аккаунт `client-<slug>` (REST API, `must_change_password: false`).
-2. Пустой репозиторий под этим аккаунтом + **разовый импорт**
-   (`git clone --mirror` канонического `showcase/sqas-demo-chart` →
-   `git push --mirror` в репозиторий клиента; не живой fork/sync —
-   дальше клиент сам решает, что делать со своей копией).
+2. **Приватный** репозиторий под этим аккаунтом (виден только ему) +
+   **разовый импорт** (`git clone --mirror` канонического
+   `showcase/sqas-demo-chart` → `git push --mirror` в репозиторий
+   клиента; не живой fork/sync — дальше клиент сам решает, что делать со
+   своей копией) + отдельный read-only токен (scope `read:repository`)
+   **под аккаунтом самого клиента** — не его логин-пароль, узкий токен
+   специально для Flux (тот же приём, что `client-infra-chart-repo-auth`
+   в `unitum-demo-k8s-infra`).
 3. Nexus: свой hosted docker-репозиторий (`docker-<slug>`, свободный
    порт), push-роль только на него + read-only роль `docker-shared-pull`
    на общие демо-образы, пользователь клиента с обеими.
 4. **Один `HelmRelease client-infra-<slug>`** в `flux-system` (чарт
-   `ops/client-infra`, `values`: slug/докер-порт/докер-креды/URL
-   репозитория клиента) — helm-controller раскатывает из него:
+   `ops/client-infra`, `values`: slug/докер-порт/докер-креды/URL и
+   read-only токен репозитория клиента) — helm-controller раскатывает из
+   него:
    - `Namespace <slug>-saas`
    - `Certificate` — свой wildcard `*.<slug>-saas.${BASE_DOMAIN}`
    - `Secret registry-pull-secret` (dockerconfigjson, креды из шага 3)
-   - `GitRepository client-<slug>` (в `flux-system`) → репозиторий
-     клиента на Forgejo
+   - `Secret client-<slug>-repo-auth` (в `flux-system`, basic-auth,
+     read-only токен клиента из шага 2) + `GitRepository client-<slug>`
+     (тоже в `flux-system`, с `secretRef` на этот `Secret`) → приватный
+     репозиторий клиента на Forgejo
    - `HelmRelease app` — `sourceRef` на этот `GitRepository`, отсюда
      deploy-on-push (`reconcileStrategy: Revision`)
    - `ServiceAccount`/`Role`/`RoleBinding saas-provisioner` — полный CRUD

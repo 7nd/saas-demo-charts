@@ -46,6 +46,7 @@ from onboarding_common import (
     apply_helmrelease,
     create_service_account_token,
     docker_config_json,
+    forgejo_create_client_read_token,
     forgejo_create_repo,
     forgejo_create_user,
     forgejo_mirror_import,
@@ -90,11 +91,17 @@ def main() -> None:
     fg = forgejo_session(cfg)
     forgejo_create_user(cfg, fg, client_user, f"{slug}@clients.{cfg.base_domain}", client_password)
 
-    print(f"==> создаю {client_user}/{CLIENT_REPO}")
-    forgejo_create_repo(cfg, fg, client_user, CLIENT_REPO, private=False)
+    print(f"==> создаю {client_user}/{CLIENT_REPO} (приватный)")
+    forgejo_create_repo(cfg, fg, client_user, CLIENT_REPO, private=True)
 
     print(f"==> импортирую {cfg.canonical_owner}/{cfg.canonical_repo} -> {client_user}/{CLIENT_REPO}")
     forgejo_mirror_import(cfg, client_user, client_password, CLIENT_REPO)
+
+    # Приватный репозиторий -> Flux не сможет его анонимно клонировать.
+    # Отдельный узкий read-only токен ПОД АККАУНТОМ КЛИЕНТА (не его логин-
+    # пароль) — тот же приём, что client-infra-chart-repo-auth в
+    # unitum-demo-k8s-infra/infrastructure/sources.
+    client_repo_token = forgejo_create_client_read_token(cfg, client_user, client_password)
 
     # ── 2. Nexus: пользователь + СВОЙ docker-репозиторий ──────────────────
     print(f"==> завожу Nexus docker-репозиторий {docker_repo_name}")
@@ -118,7 +125,13 @@ def main() -> None:
     docker_auth_json = docker_config_json(docker_host, client_user, nexus_password)
     client_repo_url = f"{cfg.forgejo_internal}/{client_user}/{CLIENT_REPO}.git"
     hr = client_infra_helmrelease(
-        slug, cfg, docker_port=docker_port, docker_auth_json=docker_auth_json, client_repo_url=client_repo_url
+        slug,
+        cfg,
+        docker_port=docker_port,
+        docker_auth_json=docker_auth_json,
+        client_repo_url=client_repo_url,
+        client_repo_user=client_user,
+        client_repo_token=client_repo_token,
     )
     api = k8s_custom_api()
     generation = apply_helmrelease(api, hr)
@@ -134,7 +147,8 @@ def main() -> None:
 Клиент "{slug}" готов.
 
 Живой стенд:      https://{stand_host}/
-Forgejo:           {cfg.forgejo_url}/{client_user}/{CLIENT_REPO}
+Forgejo (приватный репозиторий, виден только этому аккаунту):
+  {cfg.forgejo_url}/{client_user}/{CLIENT_REPO}
   логин:           {client_user}
   пароль:          {client_password}
 

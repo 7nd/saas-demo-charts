@@ -29,8 +29,11 @@ jobs:
           # между джобами (не свежий каждый раз, как в docker-режиме) —
           # подчистить рабочую директорию от прошлого запуска на всякий случай.
           find . -mindepth 1 -delete 2>/dev/null || true
-          SERVER_HOST="$(echo "${{ github.server_url }}" | sed -E 's#^https?://##')"
-          git clone --quiet "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${SERVER_HOST}/${{ github.repository }}.git" .
+          # server_url — тот, которым раннер реально зарегистрирован
+          # (внутренний http://forgejo-http...:3000, не публичный https)
+          # — подставляем токен в СУЩЕСТВУЮЩУЮ схему, не жёстко https://.
+          AUTH_URL="$(echo "${{ github.server_url }}" | sed -E "s#^(https?://)#\1x-access-token:${{ secrets.GITHUB_TOKEN }}@#")"
+          git clone --quiet "${AUTH_URL}/${{ github.repository }}.git" .
           git checkout --quiet "${{ github.sha }}"
 
       - name: build & push (BuildKit, без docker build)
@@ -83,5 +86,5 @@ jobs:
           git add charts/deployment-demo/values.app-image.yaml
           git commit -m "deploy: app image ${SHORT_SHA} [skip ci]"
 
-          SERVER_HOST="$(echo "${{ github.server_url }}" | sed -E 's#^https?://##')"
-          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${SERVER_HOST}/${{ github.repository }}.git" "HEAD:${{ github.ref_name }}"
+          AUTH_URL="$(echo "${{ github.server_url }}" | sed -E "s#^(https?://)#\1x-access-token:${{ secrets.GITHUB_TOKEN }}@#")"
+          git push "${AUTH_URL}/${{ github.repository }}.git" "HEAD:${{ github.ref_name }}"

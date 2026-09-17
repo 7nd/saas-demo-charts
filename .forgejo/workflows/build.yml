@@ -18,7 +18,20 @@ jobs:
   build:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      # НЕ actions/checkout@v4 — это JS-экшен, нужен node, которого нет
+      # (и не будет — host-режим означает "что в образе раннера, то и
+      # есть", а node туда специально не ставим). Обычный git clone —
+      # он уже есть в образе раннера.
+      - name: checkout
+        run: |
+          set -eu
+          # host-режим — один и тот же контейнер раннера переиспользуется
+          # между джобами (не свежий каждый раз, как в docker-режиме) —
+          # подчистить рабочую директорию от прошлого запуска на всякий случай.
+          find . -mindepth 1 -delete 2>/dev/null || true
+          SERVER_HOST="$(echo "${{ github.server_url }}" | sed -E 's#^https?://##')"
+          git clone --quiet "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${SERVER_HOST}/${{ github.repository }}.git" .
+          git checkout --quiet "${{ github.sha }}"
 
       - name: build & push (BuildKit, без docker build)
         env:

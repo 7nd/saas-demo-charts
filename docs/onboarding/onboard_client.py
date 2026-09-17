@@ -182,10 +182,11 @@ Docker registry (свой, изолирован от других клиенто
   values.imagePullSecrets: [{{name: registry-pull-secret}}] в своём HelmRelease,
   если решишь использовать свой образ вместо стокового nginx:alpine.
 
-CI (проще ручного docker push): поправь app/index.html в своём репозитории
-и запушь — .forgejo/workflows/build.yml сама соберёт образ (BuildKit, без
-docker build), запушит в твой registry и обновит стенд. Ничего
-дополнительно настраивать не нужно — свой раннер и все секреты уже готовы.
+CI (проще ручного docker push): поправь 03-build-your-image/index.html в
+своём репозитории и запушь — .forgejo/workflows/build.yml сама соберёт
+образ (BuildKit, без docker build), запушит в твой registry и обновит
+стенд. Ничего дополнительно настраивать не нужно — свой раннер и все
+секреты уже готовы.
 
 Kubernetes self-service (namespace {namespace}):
   K8S_API_SERVER={k8s_server}
@@ -195,13 +196,15 @@ Kubernetes self-service (namespace {namespace}):
   если перевыпускаешь руками, обнови и там)
 
 Дальше клиент может:
-  - пушить в свой Forgejo-репозиторий -> стенд обновится сам (см. helmrelease-cheatsheet.md)
-  - создавать свои HelmRelease в {namespace} через K8S_TOKEN (examples/manage_tenant.py,
-    поменять NAMESPACE="{namespace}" и BASE_DOMAIN="{slug}-saas.{cfg.base_domain}")
-  - задеплоить examples/tenant-api — референс REST API для провижининга
-    СВОИХ тенантов (просто пушь в examples/tenant-api/**, CI сама
-    соберёт и задеплоит тем же self-service токеном — подробности и
-    модель авторизации в examples/README.md)
+  - пушить в свой Forgejo-репозиторий -> стенд обновится сам (см. 02-deploy-it/helmrelease-cheatsheet.md)
+  - создавать свои HelmRelease в {namespace} через K8S_TOKEN
+    (04-self-service-api/manage-tenant/manage_tenant.py, поменять
+    NAMESPACE="{namespace}" и BASE_DOMAIN="{slug}-saas.{cfg.base_domain}")
+  - задеплоить 04-self-service-api/tenant-api — референс REST API для
+    провижининга СВОИХ тенантов (просто пушь в
+    04-self-service-api/tenant-api/**, CI сама соберёт и задеплоит тем же
+    self-service токеном — подробности и модель авторизации в
+    04-self-service-api/README.md)
 ================================================================
 """)
 

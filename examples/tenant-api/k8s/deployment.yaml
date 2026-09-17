@@ -24,6 +24,14 @@ spec:
       containers:
         - name: tenant-api
           image: __IMAGE__
+          env:
+            # automountServiceAccountToken: false означает Kubernetes не
+            # монтирует вообще ничего из serviceaccount — и файл с
+            # namespace тоже. Downward API — намного не требует его.
+            - name: TENANT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - containerPort: 8080
           resources:

@@ -34,23 +34,28 @@ app = FastAPI(title="tenant-api")
 
 
 def _own_namespace() -> str:
-    override = os.environ.get("TENANT_NAMESPACE")
-    if override:
-        return override
-    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
-        return f.read().strip()
+    # automountServiceAccountToken: false (k8s/deployment.yaml) значит
+    # Kubernetes НЕ монтирует вообще ничего из serviceaccount — ни
+    # токен, ни ca.crt, ни файл namespace (проверено живьём:
+    # FileNotFoundError на /var/run/secrets/.../namespace — весь этот
+    # projected volume просто не создаётся). Поэтому namespace идёт
+    # через Downward API как обычная env-переменная (см. env.TENANT_NAMESPACE
+    # в k8s/deployment.yaml, fieldRef: metadata.namespace) — она не
+    # требует смонтированного serviceaccount вообще.
+    return os.environ["TENANT_NAMESPACE"]
 
 
 def _api_for_token(token: str) -> client.CustomObjectsApi:
     """Клиент K8s API с ЧУЖИМ (вызывающего) токеном — не с токеном этого пода, у пода его и нет
-    (automountServiceAccountToken: false в k8s/deployment.yaml). Host/CA — те же переменные/файл,
-    что Kubernetes кладёt в любой под сама (KUBERNETES_SERVICE_HOST/_PORT, ca.crt) — не требуют
-    примонтированного токена."""
+    (automountServiceAccountToken: false). По той же причине нет и ca.crt пода — TLS верификация
+    выключена (verify_ssl=False), тот же компромисс, что и --insecure-skip-tls-verify в
+    .forgejo/workflows/tenant-api.yml (клиенту нигде в этом проекте не выдаётся CA-сертификат
+    кластера отдельно)."""
     cfg = client.Configuration()
     host = os.environ["KUBERNETES_SERVICE_HOST"]
     port = os.environ["KUBERNETES_SERVICE_PORT"]
     cfg.host = f"https://{host}:{port}"
-    cfg.ssl_ca_cert = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    cfg.verify_ssl = False
     cfg.api_key = {"authorization": f"Bearer {token}"}
     return client.CustomObjectsApi(client.ApiClient(cfg))
 

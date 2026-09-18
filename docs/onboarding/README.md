@@ -11,7 +11,7 @@ end-to-end на реальном стенде (`slug=test3`/`test4`, парал�
 только по коду.
 
 Самый простой путь для клиента — вообще не трогать `docker`/`kubectl`
-руками: правишь `03-build-your-image/index.html` в своём репозитории и
+руками: правишь `02-build-your-image/index.html` в своём репозитории и
 пушишь, CI (`.forgejo/workflows/build.yml`, свой раннер на каждого
 клиента, без Docker/DinD — BuildKit) сама собирает образ, пушит в твой
 же personal registry и обновляет стенд.

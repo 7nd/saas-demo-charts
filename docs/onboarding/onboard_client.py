@@ -163,48 +163,38 @@ def main() -> None:
     # ── 5. Сводка ────────────────────────────────────────────────────────
     print(f"""
 ================================================================
-Клиент "{slug}" готов.
+Доступ для "{slug}" настроен.
 
-Живой стенд:      https://{stand_host}/
-Forgejo (приватный репозиторий, виден только этому аккаунту):
+Живой стенд:        https://{stand_host}/
+
+Git-репозиторий (приватный, доступен только этому аккаунту):
   {cfg.forgejo_url}/{client_user}/{CLIENT_REPO}
-  логин:           {client_user}
-  пароль:          {client_password}
+  логин:            {client_user}
+  пароль:           {client_password}
 
-Docker registry (свой, изолирован от других клиентов):
-  host:            {docker_host}
-  логин:           {client_user}
-  пароль:          {nexus_password}
-  push:            docker push {docker_host}/<image>:<tag>
-  pull:            docker pull {docker_host}/<image>:<tag>
-  общие демо-образы (read-only): docker pull {shared_docker_host}/shared/<image>:<tag>
-  imagePullSecret "registry-pull-secret" уже лежит в {namespace} — укажи
-  values.imagePullSecrets: [{{name: registry-pull-secret}}] в своём HelmRelease,
-  если решишь использовать свой образ вместо стокового nginx:alpine.
+Docker registry (личный, изолирован от других клиентов):
+  адрес:            {docker_host}
+  логин:            {client_user}
+  пароль:           {nexus_password}
+  push:             docker push {docker_host}/<image>:<tag>
+  pull:             docker pull {docker_host}/<image>:<tag>
+  общие демонстрационные образы (только чтение):
+                    docker pull {shared_docker_host}/shared/<image>:<tag>
 
-CI (проще ручного docker push): поправь 03-build-your-image/index.html в
-своём репозитории и запушь — .forgejo/workflows/build.yml сама соберёт
-образ (BuildKit, без docker build), запушит в твой registry и обновит
-стенд. Ничего дополнительно настраивать не нужно — свой раннер и все
-секреты уже готовы.
+Kubernetes API (namespace {namespace}):
+  адрес сервера:    {k8s_server}
+  токен доступа:    {k8s_token}
+  Срок действия токена — {cfg.token_duration}; перевыпуск: kubectl create
+  token saas-provisioner -n {namespace} --duration=... Тот же токен
+  использует CI (секреты K8S_TOKEN/K8S_API_SERVER репозитория) — при
+  перевыпуске обновите и там.
 
-Kubernetes self-service (namespace {namespace}):
-  K8S_API_SERVER={k8s_server}
-  K8S_TOKEN={k8s_token}
-  (токен на {cfg.token_duration}, перевыпуск: kubectl create token saas-provisioner -n {namespace} --duration=...
-  тот же токен лежит в CI-секретах K8S_TOKEN/K8S_API_SERVER репозитория —
-  если перевыпускаешь руками, обнови и там)
-
-Дальше клиент может:
-  - пушить в свой Forgejo-репозиторий -> стенд обновится сам (см. 02-deploy-it/helmrelease-cheatsheet.md)
-  - создавать свои HelmRelease в {namespace} через K8S_TOKEN
-    (04-self-service-api/manage-tenant/manage_tenant.py, поменять
-    NAMESPACE="{namespace}" и BASE_DOMAIN="{slug}-saas.{cfg.base_domain}")
-  - задеплоить 04-self-service-api/tenant-api — референс REST API для
-    провижининга СВОИХ тенантов (просто пушь в
-    04-self-service-api/tenant-api/**, CI сама соберёт и задеплоит тем же
-    self-service токеном — подробности и модель авторизации в
-    04-self-service-api/README.md)
+Дальнейшие шаги — в репозитории {cfg.forgejo_url}/{client_user}/{CLIENT_REPO},
+по порядку (подробности в README.md репозитория):
+  1. 01-explore-the-deployment — уже развёрнутый стенд: устройство и настройка
+  2. 02-build-your-image — сборка и публикация собственного образа
+  3. 03-test-the-cli — управление тестовыми клиентами через командную строку
+  4. 04-test-the-api — то же самое через REST API
 ================================================================
 """)
 
